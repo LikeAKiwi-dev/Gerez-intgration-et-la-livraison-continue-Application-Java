@@ -98,7 +98,11 @@ jobs:
           SHA7="$(echo "${GITHUB_SHA}" | cut -c1-7)"
           BRANCH_RAW="${GITHUB_REF_NAME}"
           BRANCH_SAFE="$(echo "${BRANCH_RAW}" | tr '/' '-' )"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY}" >> $GITHUB_OUTPUT
+          
+          IMAGE_RAW="ghcr.io/${GITHUB_REPOSITORY}"
+          IMAGE_LC="$(echo "${IMAGE_RAW}" | tr '[:upper:]' '[:lower:]')"
+          
+          echo "image=${IMAGE_LC}" >> $GITHUB_OUTPUT
           echo "tag=${BRANCH_SAFE}-${SHA7}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
