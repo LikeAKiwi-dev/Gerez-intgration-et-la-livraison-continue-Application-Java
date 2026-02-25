@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "ci-test"]
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+  packages: write
+jobs:
+  test:
+    name: Tests (auto Angular/Java)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect project type
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f "package.json" && -f "karma.conf.js" ]]; then
+            echo "type=angular" >> $GITHUB_OUTPUT
+          elif [[ -f "gradlew" || -f "gradlew.bat" ]] && ( [[ -f "build.gradle" ]] || [[ -f "build.gradle.kts" ]] ); then
+            echo "type=gradle" >> $GITHUB_OUTPUT
+          else
+            echo "type=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail if unknown project
+        if: steps.detect.outputs.type == 'unknown'
+        run: |
+          echo "Projet non détecté. Attendu:"
+          echo "- Angular: package.json + karma.conf.js"
+          echo "- Gradle: gradlew(.bat) + build.gradle(.kts)"
+          exit 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Chrome (Angular)
+        if: steps.detect.outputs.type == 'angular'
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Setup Node (Angular)
+        if: steps.detect.outputs.type == 'angular'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Java (Gradle)
+        if: steps.detect.outputs.type == 'gradle'
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "gradle"
+
+      - name: Run tests (run-tests.py)
+        run: python run-tests.py
+
+      - name: Upload JUnit XML artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
+      - name: Publish test report
+        if: always() && hashFiles('test-results/*.xml') != ''
+        uses: dorny/test-reporter@v1
+        with:
+          name: Unit Tests
+          path: test-results/*.xml
+          reporter: java-junit
+          fail-on-error: "false"
+
+  build:
+    name: Build & Push Docker image (GHCR)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tag (branch-sha)
+        id: tag
+        shell: bash
+        run: |
+          SHA7="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          BRANCH_RAW="${GITHUB_REF_NAME}"
+          BRANCH_SAFE="$(echo "${BRANCH_RAW}" | tr '/' '-' )"
+          
+          IMAGE_RAW="ghcr.io/${GITHUB_REPOSITORY}"
+          IMAGE_LC="$(echo "${IMAGE_RAW}" | tr '[:upper:]' '[:lower:]')"
+          
+          echo "image=${IMAGE_LC}" >> $GITHUB_OUTPUT
+          echo "tag=${BRANCH_SAFE}-${SHA7}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push on push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
