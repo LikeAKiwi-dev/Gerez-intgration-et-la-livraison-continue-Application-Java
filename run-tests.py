@@ -30,14 +30,14 @@ def run(cmd: list[str], cwd: Path) -> int:
 
 
 def ensure_cmd(cmd: str, hint: str) -> bool:
+    candidates = [cmd]
     if is_windows():
-        candidates = [cmd, f"{cmd}.cmd", f"{cmd}.exe", f"{cmd}.bat"]
+        candidates += [f"{cmd}.cmd", f"{cmd}.exe", f"{cmd}.bat"]
 
     if not any(which(c) for c in candidates):
         log(f"ERREUR: '{cmd}' introuvable. {hint}")
         return False
     return True
-
 
 def clean_results_dir() -> None:
     if RESULTS_DIR.exists():
