@@ -1,0 +1,18 @@
+# Gradle
+.gradle
+build
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+
+# VCS
+.git
+
+# Logs
+*.log
+
+# Docker
+docker-compose.yml
+Dockerfile

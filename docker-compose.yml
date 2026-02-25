@@ -1,17 +1,37 @@
 services:
+  db:
+    image: postgres:13
+    container_name: workshop-db
+    environment:
+      POSTGRES_DB: workshopsdb
+      POSTGRES_USER: workshops_user
+      POSTGRES_PASSWORD: oc2024
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   app:
-    image: workshop-organizer
+    build: .
+    container_name: workshop-api
     ports:
       - "8080:8080"
     environment:
-      SPRING_DATASOURCE_URL: "jdbc:postgresql://db:5432/workshopsdb"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/workshopsdb
       SPRING_DATASOURCE_USERNAME: workshops_user
       SPRING_DATASOURCE_PASSWORD: oc2024
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/notions >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
 
-  db:
-    image: postgres:13
-    environment:
-      POSTGRES_USER: workshops_user
-      POSTGRES_PASSWORD: oc2024
-      POSTGRES_DB: workshopsdb
+volumes:
+  pgdata:
