@@ -2,231 +2,187 @@ name: CI
 
 on:
   push:
-    branches: ["main", "ci-test"]
   pull_request:
 
 permissions:
-  contents: read
-  checks: write
+  contents: write
   packages: write
+  pull-requests: read
+  checks: write
 
 jobs:
   test:
-    name: Tests (auto Angular/Java)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Detect project type
         id: detect
-        shell: bash
         run: |
-          if [[ -f "package.json" && -f "karma.conf.js" ]]; then
-            echo "type=angular" >> "$GITHUB_OUTPUT"
-          elif [[ -f "gradlew" || -f "gradlew.bat" ]] && ( [[ -f "build.gradle" ]] || [[ -f "build.gradle.kts" ]] ); then
-            echo "type=gradle" >> "$GITHUB_OUTPUT"
+          if [ -f "package.json" ] && [ -f "karma.conf.js" ]; then
+            echo "type=angular" >> $GITHUB_OUTPUT
+          elif [ -f "gradlew" ] && ( [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] ); then
+            echo "type=spring" >> $GITHUB_OUTPUT
           else
-            echo "type=unknown" >> "$GITHUB_OUTPUT"
+            echo "type=unknown" >> $GITHUB_OUTPUT
           fi
 
       - name: Fail if unknown project
         if: steps.detect.outputs.type == 'unknown'
-        shell: bash
         run: |
-          echo "Projet non détecté. Attendu:"
-          echo "- Angular: package.json + karma.conf.js"
-          echo "- Gradle: gradlew(.bat) + build.gradle(.kts)"
+          echo "Impossible de détecter le projet (Angular ou Spring Boot)."
           exit 1
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Setup Chrome (Angular)
-        if: steps.detect.outputs.type == 'angular'
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Setup Node (Angular)
+      - name: Setup Node
         if: steps.detect.outputs.type == 'angular'
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
+          node-version: 20
+          cache: npm
 
-      - name: Setup Java (Gradle)
-        if: steps.detect.outputs.type == 'gradle'
+      - name: Setup Java
+        if: steps.detect.outputs.type == 'spring'
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "21"
-          cache: "gradle"
+          distribution: temurin
+          java-version: 21
+          cache: gradle
 
-      - name: Run tests (run-tests.py)
-        run: python run-tests.py
-
-      - name: Collect JUnit reports into test-results/
-        if: always()
-        shell: bash
+      - name: Run unified tests (JUnit -> test-results/)
         run: |
-          set -euo pipefail
-          mkdir -p test-results
-          
-          # Sources possibles selon projet (Angular / Gradle / ton script)
-          for d in reports build/test-results test-results; do
-            if [ -d "$d" ]; then
-              find "$d" -type f -name "*.xml" -print -exec cp -n {} test-results/ \; || true
-            fi
-          done
-          
-          echo "=== Final test-results content ==="
-          ls -la test-results || true
+          python3 run-tests.py
 
-      - name: Upload JUnit XML artifacts
+      - name: Upload test results artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: test-results/**/*.xml
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
       - name: Publish test report
-        if: always() && hashFiles('test-results/**/*.xml') != ''
+        if: always()
         uses: dorny/test-reporter@v1
         with:
-          name: Unit Tests
+          name: Tests Report
           path: test-results/**/*.xml
           reporter: java-junit
-          fail-on-error: "false"
+          fail-on-error: false
 
   build:
-    name: Build & Push Docker image (GHCR)
     runs-on: ubuntu-latest
     needs: test
-
+    if: github.event_name == 'push'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute tag (branch-sha)
-        id: tag
-        shell: bash
+      - name: Image name (lowercase)
+        id: img
         run: |
-          SHA7="${GITHUB_SHA:0:7}"
-          BRANCH_SAFE="$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
 
-          IMAGE_RAW="ghcr.io/${GITHUB_REPOSITORY}"
-          IMAGE_LC="$(echo "${IMAGE_RAW}" | tr '[:upper:]' '[:lower:]')"
-
-          echo "image=${IMAGE_LC}" >> "$GITHUB_OUTPUT"
-          echo "tag=${BRANCH_SAFE}-${SHA7}" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR (retry)
-        if: github.event_name == 'push'
-        shell: bash
-        env:
-          USERNAME: ${{ github.actor }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for i in 1 2 3 4 5; do
-            echo "$PASSWORD" | docker login ghcr.io -u "$USERNAME" --password-stdin && exit 0
-            echo "Login GHCR échoué (tentative $i/5) → retry dans 10s..."
-            sleep 10
-          done
-          exit 1
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build (and push on push)
+      - name: Docker meta (sha + branch)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.img.outputs.image }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+
+      - name: Build & push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name == 'push' }}
-          tags: |
-            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   release:
-    name: Release (semantic-release)
     runs-on: ubuntu-latest
-    needs: [test, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      packages: write
-
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - name: Checkout (full history)
+      - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node
+      - name: Setup Node (semantic-release)
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: 20
 
-      - name: Semantic Release
+      - name: Install semantic-release + plugins (ephemeral)
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm i -D \
+            semantic-release@24 \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/github \
+            @semantic-release/npm \
+            @semantic-release/exec
+
+      - name: Run semantic-release (uses .releaserc.json)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx -y semantic-release@24 \
-            -p @semantic-release/commit-analyzer \
-            -p @semantic-release/release-notes-generator \
-            -p @semantic-release/github
+          npx semantic-release
 
-      - name: Read version from latest git tag
-        id: vtag
-        shell: bash
+      - name: Read released version (latest tag)
+        id: ver
         run: |
-          if TAG="$(git describe --tags --abbrev=0 2>/dev/null)"; then
-            VERSION="${TAG#v}"
-          else
-            VERSION=""
-          fi
+          TAG="$(git describe --tags --abbrev=0)"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          IMAGE_RAW="ghcr.io/${GITHUB_REPOSITORY}"
-          IMAGE_LC="$(echo "${IMAGE_RAW}" | tr '[:upper:]' '[:lower:]')"
+      - name: Image name (lowercase)
+        id: img
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
 
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "image=${IMAGE_LC}" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: steps.vtag.outputs.version != ''
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR (retry)
-        if: steps.vtag.outputs.version != ''
-        shell: bash
-        env:
-          USERNAME: ${{ github.actor }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for i in 1 2 3 4 5; do
-            echo "$PASSWORD" | docker login ghcr.io -u "$USERNAME" --password-stdin && exit 0
-            echo "Login GHCR échoué (tentative $i/5) → retry dans 10s..."
-            sleep 10
-          done
-          exit 1
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push versioned image
-        if: steps.vtag.outputs.version != ''
+      - name: Build & push Docker image (semantic version tag)
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
           push: true
           tags: |
-            ${{ steps.vtag.outputs.image }}:${{ steps.vtag.outputs.version }}
-            ${{ steps.vtag.outputs.image }}:latest
+            ${{ steps.img.outputs.image }}:${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
