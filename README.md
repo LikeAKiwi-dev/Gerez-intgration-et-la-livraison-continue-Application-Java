@@ -94,3 +94,5 @@ To publish your application to a GitLab registry, follow these steps:
    Remember to replace placeholders with actual values specific to your project.
 
 Feel free to enhance this README with additional details, such as API endpoints, security considerations, and deployment instructions. Happy organizing! 🚀
+
+
