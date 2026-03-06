@@ -1,5 +1,4 @@
 services:
-
   app:
     image: workshop-organizer
     ports:
@@ -8,9 +7,13 @@ services:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://db:5432/workshopsdb"
       SPRING_DATASOURCE_USERNAME: workshops_user
       SPRING_DATASOURCE_PASSWORD: oc2024
+    depends_on:
+      - db
 
   db:
     image: postgres:13
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: workshops_user
       POSTGRES_PASSWORD: oc2024
